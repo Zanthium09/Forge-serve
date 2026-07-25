@@ -3,3 +3,4 @@ bin/
 *.exe
 __pycache__/
 *.pyc
+loadgen/loadgen.exe
