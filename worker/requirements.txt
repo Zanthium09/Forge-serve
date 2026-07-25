@@ -1,3 +1,6 @@
 fastapi>=0.110
 uvicorn>=0.29
-llama-cpp-python>=0.2.90
+# Pinned exactly: engine.py's backend drives this version's low-level
+# ctypes bindings, which are not stable across releases.
+llama-cpp-python==0.3.34
+numpy>=2

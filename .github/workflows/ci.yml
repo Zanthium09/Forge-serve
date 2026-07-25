@@ -31,3 +31,17 @@ jobs:
         run: |
           pip install ruff
           ruff check worker/
+
+  worker-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Scheduler tests only - they use a fake model backend, so CI never
+      # installs llama-cpp-python or loads a model.
+      - name: Scheduler unit tests
+        run: |
+          pip install pytest
+          python -m pytest worker/tests -q
