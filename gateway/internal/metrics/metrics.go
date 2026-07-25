@@ -36,7 +36,32 @@ var (
 
 	batchOccupancy = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "forge_batch_occupancy",
-		Help: "Sequences currently decoding in the worker's batch.",
+		Help: "Sequences currently decoding across healthy workers.",
+	})
+
+	healthyWorkers = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "forge_healthy_workers",
+		Help: "Workers currently passing health checks.",
+	})
+
+	totalWorkers = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "forge_workers_total",
+		Help: "Workers configured in the fleet.",
+	})
+
+	failoversTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "forge_failovers_total",
+		Help: "Requests retried on another worker after an upstream failure.",
+	})
+
+	rateLimitedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "forge_rate_limited_total",
+		Help: "Requests rejected by the rate limiter.",
+	})
+
+	limiterFallbackTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "forge_limiter_local_fallback_total",
+		Help: "Rate-limit decisions served by the local fallback (Redis down).",
 	})
 )
 
@@ -44,9 +69,15 @@ func IncRequest(code int)          { requestsTotal.WithLabelValues(strconv.Itoa(
 func ObserveTTFT(d time.Duration)  { ttftSeconds.Observe(d.Seconds()) }
 func SetTokensPerSecond(v float64) { tokensPerSecond.Set(v) }
 
-// SetWorkerStats records the worker's scheduler state (polled, not
-// pushed — the worker stays ignorant of Prometheus).
-func SetWorkerStats(queue, active int) {
+// SetFleet records aggregate fleet state (polled, not pushed — workers
+// stay ignorant of Prometheus).
+func SetFleet(queue, active, healthy, total int) {
 	workerQueueDepth.Set(float64(queue))
 	batchOccupancy.Set(float64(active))
+	healthyWorkers.Set(float64(healthy))
+	totalWorkers.Set(float64(total))
 }
+
+func IncFailover()        { failoversTotal.Inc() }
+func IncRateLimited()     { rateLimitedTotal.Inc() }
+func IncLimiterFallback() { limiterFallbackTotal.Inc() }

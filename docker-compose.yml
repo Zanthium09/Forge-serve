@@ -4,25 +4,28 @@ services:
     ports:
       - "8080:8080"
     environment:
-      WORKER_URL: http://worker:9000
+      WORKER_URLS: http://worker1:9000,http://worker2:9000
       DATABASE_URL: postgres://forge:forge@postgres:5432/forge
+      REDIS_URL: redis://redis:6379
     depends_on:
-      worker:
+      worker1:
+        condition: service_healthy
+      worker2:
         condition: service_healthy
       postgres:
         condition: service_started
       redis:
         condition: service_started
 
-  worker:
+  # Two workers so routing and failover are real. They are not published to
+  # the host: the gateway is the only public door.
+  worker1: &worker
     build: ./worker
-    # No ports: the gateway is the only public door; the worker is
-    # reachable solely as worker:9000 on the compose network.
     volumes:
       - ./models:/models:ro
     environment:
       MODEL_PATH: /models/qwen2.5-1.5b-instruct-q4_k_m.gguf
-      # ENGINE=sequential docker compose up -d worker -> Phase 1 baseline
+      # ENGINE=sequential docker compose up -d worker1 worker2 -> baseline
       ENGINE: ${ENGINE:-batched}
       MAX_BATCH: ${MAX_BATCH:-16}
       MAX_QUEUE: ${MAX_QUEUE:-8}
@@ -31,9 +34,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 60s
+      start_period: 90s
 
-  # Unused until Phase 4 - present so the quickstart shape never changes.
+  worker2: *worker
+
   redis:
     image: redis:7-alpine
     ports:

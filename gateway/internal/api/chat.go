@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Zanthium09/forge-serve/gateway/internal/metrics"
+	"github.com/Zanthium09/forge-serve/gateway/internal/pool"
 	"github.com/Zanthium09/forge-serve/gateway/internal/worker"
 )
 
@@ -38,7 +39,7 @@ const (
 )
 
 type chatHandler struct {
-	worker *worker.Client
+	pool *pool.Pool
 }
 
 // writeOverloaded answers a rejected-at-admission request. Retry-After
@@ -49,6 +50,13 @@ func writeOverloaded(w http.ResponseWriter) {
 	metrics.IncRequest(http.StatusTooManyRequests)
 	http.Error(w, `{"error":{"message":"server overloaded, retry"}}`,
 		http.StatusTooManyRequests)
+}
+
+func writeNoCapacity(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	metrics.IncRequest(http.StatusServiceUnavailable)
+	http.Error(w, `{"error":{"message":"no healthy worker available"}}`,
+		http.StatusServiceUnavailable)
 }
 
 func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -87,8 +95,32 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// stream relays worker tokens as SSE. Client disconnect cancels r.Context(),
-// which aborts the worker request — generation stops end to end.
+// dispatch runs one attempt against one worker, keeping that worker's
+// outstanding-token estimate honest however the attempt ends. onEvent
+// returns false to stop reading early.
+//
+// It reports how many tokens reached the client, because that is what
+// decides whether a failure is retryable: a request that has emitted
+// nothing can be safely restarted elsewhere, one that has already streamed
+// tokens cannot (ADR-005).
+func dispatch(r *http.Request, wk *pool.Worker, wreq worker.Request,
+	onEvent func(worker.Event) bool) (sent int, err error) {
+	wk.AddOutstanding(wreq.MaxTokens)
+	defer func() { wk.ReleaseOutstanding(wreq.MaxTokens - sent) }()
+
+	err = wk.Client.Generate(r.Context(), wreq, func(ev worker.Event) bool {
+		if !ev.Done {
+			sent++
+			wk.TokenDelivered()
+		}
+		return onEvent(ev)
+	})
+	return sent, err
+}
+
+// stream relays worker tokens as SSE. Client disconnect cancels
+// r.Context(), which aborts the worker request - generation stops end to
+// end. A worker failing before the first token is retried once elsewhere.
 func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model string, wreq worker.Request, start time.Time) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -96,14 +128,15 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 		return
 	}
 
-	sent := 0
-	err := h.worker.Generate(r.Context(), wreq, func(ev worker.Event) bool {
-		if sent == 0 && !ev.Done {
-			// Headers are deferred until the first real event: an
-			// admission rejection must still be able to set a 429 status,
-			// which is impossible once any byte has been written.
+	total := 0
+	emit := func(ev worker.Event) bool {
+		if total == 0 && !ev.Done {
+			// Headers are deferred until the first real event: an admission
+			// rejection or a failover must still be able to set a status
+			// code, which is impossible once any byte has been written.
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
+			metrics.ObserveTTFT(time.Since(start))
 		}
 		c := chunk{ID: id, Object: "chat.completion.chunk",
 			Created: time.Now().Unix(), Model: model}
@@ -111,11 +144,8 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 			fr := ev.FinishReason
 			c.Choices = []choice{{FinishReason: &fr}}
 		} else {
-			if sent == 0 {
-				metrics.ObserveTTFT(time.Since(start))
-			}
 			c.Choices = []choice{{Delta: delta{Content: ev.Token}}}
-			sent++
+			total++
 		}
 		b, merr := json.Marshal(c)
 		if merr != nil {
@@ -126,54 +156,95 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 		}
 		flusher.Flush()
 		return true
-	})
-	// A cancelled client surfaces as an error from Generate (the worker
-	// request is aborted) — classify by cause before blaming the worker.
+	}
+
+	wk, err := h.pool.Pick(nil)
+	if err != nil {
+		writeNoCapacity(w)
+		return
+	}
+	sent, err := dispatch(r, wk, wreq, emit)
+
+	// Retry once on another worker, but only if nothing reached the client
+	// yet. Restarting a half-streamed response would duplicate text.
+	if err != nil && sent == 0 && r.Context().Err() == nil &&
+		!errors.Is(err, worker.ErrOverloaded) {
+		slog.Warn("worker failed before first token, retrying elsewhere",
+			"worker", wk.URL, "err", err)
+		metrics.IncFailover()
+		if alt, perr := h.pool.Pick(wk); perr == nil {
+			wk = alt
+			sent, err = dispatch(r, wk, wreq, emit)
+		}
+	}
+
 	if r.Context().Err() != nil {
-		slog.Info("client disconnected, stream cancelled", "tokens_sent", sent)
+		slog.Info("client disconnected, stream cancelled", "tokens_sent", total)
 		return
 	}
 	if errors.Is(err, worker.ErrOverloaded) {
-		// Rejected at admission, nothing written yet: a real 429 with
-		// Retry-After, so clients back off instead of hammering.
 		writeOverloaded(w)
 		return
 	}
 	if err != nil {
-		// Headers are already sent; an SSE error event is all we can do.
-		// The 502 label records the outcome even though the wire said 200.
+		if total == 0 {
+			// Still nothing written: a real status code is possible.
+			writeNoCapacity(w)
+			return
+		}
+		// Mid-stream failure. No migration (ADR-005): the client gets a
+		// clean, machine-readable error event instead of a silent truncation.
 		metrics.IncRequest(http.StatusBadGateway)
-		slog.Error("worker stream failed", "err", err, "tokens_sent", sent)
-		// Best-effort: the client may already be gone.
-		_, _ = fmt.Fprintf(w, "data: {\"error\": {\"message\": \"upstream failure\"}}\n\n")
+		slog.Error("worker stream failed mid-response", "err", err, "tokens_sent", total)
+		_, _ = fmt.Fprintf(w, "data: {\"error\": {\"message\": \"upstream failure\", \"type\": \"worker_lost\"}}\n\n")
 		flusher.Flush()
 		return
 	}
-	if el := time.Since(start).Seconds(); el > 0 && sent > 0 {
-		metrics.SetTokensPerSecond(float64(sent) / el)
+	if el := time.Since(start).Seconds(); el > 0 && total > 0 {
+		metrics.SetTokensPerSecond(float64(total) / el)
 	}
 	metrics.IncRequest(http.StatusOK)
 	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
 
-// aggregate collects the full worker stream, then answers with one JSON body.
+// aggregate collects the full worker stream, then answers with one JSON
+// body. Non-stream responses buffer everything anyway, so a mid-response
+// worker failure is always retryable here.
 func (h *chatHandler) aggregate(w http.ResponseWriter, r *http.Request, id, model string, wreq worker.Request, start time.Time) {
-	var sb strings.Builder
-	var final worker.Event
-	first := true
-	err := h.worker.Generate(r.Context(), wreq, func(ev worker.Event) bool {
-		if ev.Done {
-			final = ev
-		} else {
-			if first {
-				metrics.ObserveTTFT(time.Since(start))
-				first = false
+	attempt := func(wk *pool.Worker) (string, worker.Event, int, error) {
+		var sb strings.Builder
+		var final worker.Event
+		first := true
+		sent, err := dispatch(r, wk, wreq, func(ev worker.Event) bool {
+			if ev.Done {
+				final = ev
+			} else {
+				if first {
+					metrics.ObserveTTFT(time.Since(start))
+					first = false
+				}
+				sb.WriteString(ev.Token)
 			}
-			sb.WriteString(ev.Token)
+			return true
+		})
+		return sb.String(), final, sent, err
+	}
+
+	wk, err := h.pool.Pick(nil)
+	if err != nil {
+		writeNoCapacity(w)
+		return
+	}
+	text, final, _, err := attempt(wk)
+
+	if err != nil && r.Context().Err() == nil && !errors.Is(err, worker.ErrOverloaded) {
+		slog.Warn("worker failed, retrying elsewhere", "worker", wk.URL, "err", err)
+		metrics.IncFailover()
+		if alt, perr := h.pool.Pick(wk); perr == nil {
+			text, final, _, err = attempt(alt)
 		}
-		return true
-	})
+	}
 	if errors.Is(err, worker.ErrOverloaded) {
 		writeOverloaded(w)
 		return
@@ -183,6 +254,7 @@ func (h *chatHandler) aggregate(w http.ResponseWriter, r *http.Request, id, mode
 		http.Error(w, "upstream failure", http.StatusBadGateway)
 		return
 	}
+
 	if el := time.Since(start).Seconds(); el > 0 && final.CompletionTokens > 0 {
 		metrics.SetTokensPerSecond(float64(final.CompletionTokens) / el)
 	}
@@ -190,7 +262,7 @@ func (h *chatHandler) aggregate(w http.ResponseWriter, r *http.Request, id, mode
 	resp := ChatResponse{
 		ID: id, Object: "chat.completion", Created: time.Now().Unix(), Model: model,
 		Choices: []RespChoice{{
-			Message:      ChatMessage{Role: "assistant", Content: sb.String()},
+			Message:      ChatMessage{Role: "assistant", Content: text},
 			FinishReason: final.FinishReason,
 		}},
 		Usage: Usage{

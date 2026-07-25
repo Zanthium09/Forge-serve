@@ -1,5 +1,5 @@
-// Package api holds the gateway's HTTP surface: health and the
-// OpenAI-compatible chat completions endpoint.
+// Package api holds the gateway's HTTP surface: health, metrics, the
+// playground page, and the OpenAI-compatible endpoints.
 package api
 
 import (
@@ -8,17 +8,24 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/Zanthium09/forge-serve/gateway/internal/auth"
-	"github.com/Zanthium09/forge-serve/gateway/internal/worker"
+	"github.com/Zanthium09/forge-serve/gateway/internal/pool"
 )
 
-// NewMux returns the gateway's routes. Auth wraps only /v1/* — health
-// and metrics stay open for probes and scrapers.
-func NewMux(w *worker.Client, a *auth.Authenticator) *http.ServeMux {
+// Deps are the gateway's collaborators. Passing a struct keeps NewMux
+// stable as phases add dependencies.
+type Deps struct {
+	Pool *pool.Pool
+	Auth *auth.Authenticator
+}
+
+// NewMux returns the gateway's routes. Auth wraps only /v1/* - health and
+// metrics stay open for probes and scrapers.
+func NewMux(d Deps) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.Handle("POST /v1/chat/completions",
-		a.Middleware(&chatHandler{worker: w}))
+		d.Auth.Middleware(&chatHandler{pool: d.Pool}))
 	return mux
 }
 

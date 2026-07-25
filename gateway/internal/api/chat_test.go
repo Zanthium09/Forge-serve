@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/Zanthium09/forge-serve/gateway/internal/auth"
-	"github.com/Zanthium09/forge-serve/gateway/internal/worker"
+	"github.com/Zanthium09/forge-serve/gateway/internal/pool"
 )
 
 // allowAllStore accepts any key — auth behavior itself is covered in
@@ -63,9 +63,11 @@ var happyLines = []string{
 	`{"done": true, "prompt_tokens": 5, "completion_tokens": 2, "finish_reason": "stop"}`,
 }
 
-func newTestMux(t *testing.T, workerURL string) http.Handler {
+func newTestMux(t *testing.T, workerURLs ...string) http.Handler {
 	t.Helper()
-	return NewMux(worker.New(workerURL), auth.New(allowAllStore{}, time.Minute))
+	p := pool.New(workerURLs)
+	p.MarkHealthyForTest()
+	return NewMux(Deps{Pool: p, Auth: auth.New(allowAllStore{}, time.Minute)})
 }
 
 func TestChatStreamRelaysSSE(t *testing.T) {
