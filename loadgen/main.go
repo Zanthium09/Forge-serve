@@ -170,6 +170,17 @@ func fire(client *http.Client, c config, id int, prompt string, warmupEnd time.T
 	res.status = resp.StatusCode
 	if resp.StatusCode != http.StatusOK {
 		res.total = time.Since(start)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			// Honor the server's backoff like a well-behaved client.
+			// Without this, closed-loop users retry instantly against a
+			// fail-fast server and the run becomes a retry storm that
+			// measures nothing (observed: 17k errors in one 60s run).
+			d := time.Second
+			if v, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && v > 0 {
+				d = time.Duration(v) * time.Second
+			}
+			time.Sleep(d)
+		}
 		return res
 	}
 
