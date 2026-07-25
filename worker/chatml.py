@@ -9,6 +9,6 @@ from __future__ import annotations
 def format_chatml(messages: list) -> str:
     parts = []
     for m in messages:
-        parts.append("<|im_start|>%s\n%s<|im_end|>\n" % (m["role"], m["content"]))
+        parts.append(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n")
     parts.append("<|im_start|>assistant\n")
     return "".join(parts)
