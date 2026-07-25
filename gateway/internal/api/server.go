@@ -9,6 +9,7 @@ import "net/http"
 func NewMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
+	mux.HandleFunc("POST /v1/chat/completions", handleChatCompletions)
 	return mux
 }
 
