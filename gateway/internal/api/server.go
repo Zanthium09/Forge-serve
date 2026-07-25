@@ -1,15 +1,18 @@
-// Package api holds the gateway's HTTP surface: health, and the
-// OpenAI-compatible chat completions endpoint (stubbed in Phase 0).
+// Package api holds the gateway's HTTP surface: health and the
+// OpenAI-compatible chat completions endpoint.
 package api
 
-import "net/http"
+import (
+	"net/http"
 
-// NewMux returns the gateway's routes. Go 1.22 method patterns replace a
-// router dependency — stdlib is enough at this size.
-func NewMux() *http.ServeMux {
+	"github.com/Zanthium09/forge-serve/gateway/internal/worker"
+)
+
+// NewMux returns the gateway's routes, wired to the given worker client.
+func NewMux(w *worker.Client) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	mux.HandleFunc("POST /v1/chat/completions", handleChatCompletions)
+	mux.Handle("POST /v1/chat/completions", &chatHandler{worker: w})
 	return mux
 }
 
