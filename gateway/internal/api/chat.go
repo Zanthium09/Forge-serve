@@ -111,6 +111,12 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 		flusher.Flush()
 		return true
 	})
+	// A cancelled client surfaces as an error from Generate (the worker
+	// request is aborted) — classify by cause before blaming the worker.
+	if r.Context().Err() != nil {
+		slog.Info("client disconnected, stream cancelled", "tokens_sent", sent)
+		return
+	}
 	if err != nil {
 		// Headers are already sent; an SSE error event is all we can do.
 		// The 502 label records the outcome even though the wire said 200.
@@ -118,10 +124,6 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 		slog.Error("worker stream failed", "err", err, "tokens_sent", sent)
 		fmt.Fprintf(w, "data: {\"error\": {\"message\": \"upstream failure\"}}\n\n")
 		flusher.Flush()
-		return
-	}
-	if r.Context().Err() != nil {
-		slog.Info("client disconnected, stream cancelled", "tokens_sent", sent)
 		return
 	}
 	if el := time.Since(start).Seconds(); el > 0 && sent > 0 {
