@@ -3,12 +3,33 @@ services:
     build: ./gateway
     ports:
       - "8080:8080"
+    environment:
+      WORKER_URL: http://worker:9000
+      DATABASE_URL: postgres://forge:forge@postgres:5432/forge
     depends_on:
-      - redis
-      - postgres
+      worker:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
 
-  # Unused until Phase 1 (auth) / Phase 4 (rate limiting) — present now so
-  # the one-command quickstart shape is fixed from day one.
+  worker:
+    build: ./worker
+    # No ports: the gateway is the only public door; the worker is
+    # reachable solely as worker:9000 on the compose network.
+    volumes:
+      - ./models:/models:ro
+    environment:
+      MODEL_PATH: /models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  # Unused until Phase 4 - present so the quickstart shape never changes.
   redis:
     image: redis:7-alpine
     ports:
@@ -24,6 +45,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
 volumes:
   pgdata:
