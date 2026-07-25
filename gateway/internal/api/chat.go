@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -38,6 +39,16 @@ const (
 
 type chatHandler struct {
 	worker *worker.Client
+}
+
+// writeOverloaded answers a rejected-at-admission request. Retry-After
+// tells clients how long to back off, which is the whole point of failing
+// fast instead of queueing indefinitely.
+func writeOverloaded(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	metrics.IncRequest(http.StatusTooManyRequests)
+	http.Error(w, `{"error":{"message":"server overloaded, retry"}}`,
+		http.StatusTooManyRequests)
 }
 
 func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -84,11 +95,16 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
 
 	sent := 0
 	err := h.worker.Generate(r.Context(), wreq, func(ev worker.Event) bool {
+		if sent == 0 && !ev.Done {
+			// Headers are deferred until the first real event: an
+			// admission rejection must still be able to set a 429 status,
+			// which is impossible once any byte has been written.
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		c := chunk{ID: id, Object: "chat.completion.chunk",
 			Created: time.Now().Unix(), Model: model}
 		if ev.Done {
@@ -115,6 +131,12 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 	// request is aborted) — classify by cause before blaming the worker.
 	if r.Context().Err() != nil {
 		slog.Info("client disconnected, stream cancelled", "tokens_sent", sent)
+		return
+	}
+	if errors.Is(err, worker.ErrOverloaded) {
+		// Rejected at admission, nothing written yet: a real 429 with
+		// Retry-After, so clients back off instead of hammering.
+		writeOverloaded(w)
 		return
 	}
 	if err != nil {
@@ -152,6 +174,10 @@ func (h *chatHandler) aggregate(w http.ResponseWriter, r *http.Request, id, mode
 		}
 		return true
 	})
+	if errors.Is(err, worker.ErrOverloaded) {
+		writeOverloaded(w)
+		return
+	}
 	if err != nil {
 		metrics.IncRequest(http.StatusBadGateway)
 		http.Error(w, "upstream failure", http.StatusBadGateway)

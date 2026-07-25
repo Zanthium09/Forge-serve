@@ -7,9 +7,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
+
+// ErrOverloaded means the worker rejected at admission (queue full).
+// It maps to a client-facing 429 + Retry-After rather than a 502: the
+// request was never accepted, so it is safe and correct to retry.
+var ErrOverloaded = errors.New("worker overloaded")
 
 type Client struct {
 	baseURL string
@@ -42,6 +48,33 @@ type Event struct {
 	FinishReason     string `json:"finish_reason"`
 }
 
+// StatsResponse mirrors the worker's /stats payload.
+type StatsResponse struct {
+	QueueDepth int `json:"queue_depth"`
+	ActiveSeqs int `json:"active_seqs"`
+	MaxBatch   int `json:"max_batch"`
+}
+
+// Stats polls the worker's queue depth and batch occupancy (scraped into
+// Prometheus; Phase 3's router will use the same signal for routing).
+func (c *Client) Stats(ctx context.Context) (StatsResponse, error) {
+	var st StatsResponse
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/stats", nil)
+	if err != nil {
+		return st, err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return st, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return st, fmt.Errorf("worker /stats returned %d", resp.StatusCode)
+	}
+	err = json.NewDecoder(resp.Body).Decode(&st)
+	return st, err
+}
+
 // Generate POSTs req and calls fn once per NDJSON event, in order.
 // fn returning false stops reading (used when the client disconnects).
 // Cancelling ctx aborts the HTTP request, which stops the worker's
@@ -63,6 +96,9 @@ func (c *Client) Generate(ctx context.Context, req Request, fn func(Event) bool)
 		return fmt.Errorf("worker request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return ErrOverloaded
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("worker returned %d", resp.StatusCode)
 	}

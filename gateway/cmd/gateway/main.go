@@ -12,6 +12,7 @@ import (
 
 	"github.com/Zanthium09/forge-serve/gateway/internal/api"
 	"github.com/Zanthium09/forge-serve/gateway/internal/auth"
+	"github.com/Zanthium09/forge-serve/gateway/internal/metrics"
 	"github.com/Zanthium09/forge-serve/gateway/internal/store"
 	"github.com/Zanthium09/forge-serve/gateway/internal/worker"
 )
@@ -36,7 +37,8 @@ func main() {
 		os.Exit(1)
 	}
 	authn := auth.New(st, 5*time.Minute)
-	srv := &http.Server{Addr: addr, Handler: api.NewMux(worker.New(workerURL), authn)}
+	wc := worker.New(workerURL)
+	srv := &http.Server{Addr: addr, Handler: api.NewMux(wc, authn)}
 
 	// Graceful shutdown: SIGTERM/interrupt lets in-flight streams drain
 	// instead of cutting client connections mid-token.
@@ -47,6 +49,25 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	// Poll the worker's scheduler state into Prometheus. Polling (not
+	// pushing) keeps the worker unaware of our metrics stack.
+	go func() {
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				sctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				if s, err := wc.Stats(sctx); err == nil {
+					metrics.SetWorkerStats(s.QueueDepth, s.ActiveSeqs)
+				}
+				cancel()
+			}
+		}
 	}()
 
 	slog.Info("gateway listening", "addr", addr)

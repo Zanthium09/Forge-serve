@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -71,6 +72,37 @@ func TestGenerateStopsWhenCallbackReturnsFalse(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
+func TestGenerateReturnsErrOverloadedOn429(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"overloaded"}`, http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	err := New(srv.URL).Generate(context.Background(), Request{}, func(Event) bool { return true })
+	if !errors.Is(err, ErrOverloaded) {
+		t.Fatalf("err = %v, want ErrOverloaded", err)
+	}
+}
+
+func TestStatsDecodesWorkerStats(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/stats" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"queue_depth":3,"active_seqs":5,"max_batch":8}`)
+	}))
+	defer srv.Close()
+
+	st, err := New(srv.URL).Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.QueueDepth != 3 || st.ActiveSeqs != 5 || st.MaxBatch != 8 {
+		t.Fatalf("stats = %+v", st)
 	}
 }
 

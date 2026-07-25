@@ -28,8 +28,25 @@ var (
 		Name: "forge_tokens_per_second",
 		Help: "Completion tokens/sec of the most recently finished request.",
 	})
+
+	workerQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "forge_worker_queue_depth",
+		Help: "Requests waiting for a batch slot on the worker.",
+	})
+
+	batchOccupancy = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "forge_batch_occupancy",
+		Help: "Sequences currently decoding in the worker's batch.",
+	})
 )
 
 func IncRequest(code int)          { requestsTotal.WithLabelValues(strconv.Itoa(code)).Inc() }
 func ObserveTTFT(d time.Duration)  { ttftSeconds.Observe(d.Seconds()) }
 func SetTokensPerSecond(v float64) { tokensPerSecond.Set(v) }
+
+// SetWorkerStats records the worker's scheduler state (polled, not
+// pushed — the worker stays ignorant of Prometheus).
+func SetWorkerStats(queue, active int) {
+	workerQueueDepth.Set(float64(queue))
+	batchOccupancy.Set(float64(active))
+}

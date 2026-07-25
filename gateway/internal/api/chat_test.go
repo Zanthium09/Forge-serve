@@ -179,6 +179,47 @@ func TestChatClientDisconnectCancelsHandlerAndWorker(t *testing.T) {
 	}
 }
 
+// overloadedWorker always rejects at admission, like a full queue.
+func overloadedWorker(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"overloaded"}`, http.StatusTooManyRequests)
+	}))
+}
+
+func TestStreamOverloadReturns429WithRetryAfter(t *testing.T) {
+	fw := overloadedWorker(t)
+	defer fw.Close()
+	srv := httptest.NewServer(newTestMux(t, fw.URL))
+	defer srv.Close()
+
+	resp := postJSON(t, srv.URL+"/v1/chat/completions",
+		`{"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", resp.StatusCode)
+	}
+	if ra := resp.Header.Get("Retry-After"); ra != "1" {
+		t.Fatalf("Retry-After = %q, want \"1\"", ra)
+	}
+}
+
+func TestNonStreamOverloadReturns429(t *testing.T) {
+	fw := overloadedWorker(t)
+	defer fw.Close()
+	srv := httptest.NewServer(newTestMux(t, fw.URL))
+	defer srv.Close()
+
+	resp := postJSON(t, srv.URL+"/v1/chat/completions",
+		`{"messages":[{"role":"user","content":"hi"}]}`)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", resp.StatusCode)
+	}
+}
+
 func TestHealthzStillWorks(t *testing.T) {
 	srv := httptest.NewServer(newTestMux(t, "http://unused.invalid"))
 	defer srv.Close()
