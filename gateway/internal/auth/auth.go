@@ -16,13 +16,46 @@ import (
 
 var ErrUnknownKey = errors.New("unknown api key")
 
+// Identity is who the caller is plus what they are allowed, resolved once
+// per request and carried in the context so downstream handlers (rate
+// limiting, usage accounting) need no second lookup.
+type Identity struct {
+	TenantID     int64
+	KeyHash      string
+	Burst        int
+	RefillPerSec float64
+}
+
+type ctxKey struct{}
+
+// FromContext returns the authenticated identity, if any.
+func FromContext(ctx context.Context) (Identity, bool) {
+	id, ok := ctx.Value(ctxKey{}).(Identity)
+	return id, ok
+}
+
+// Store resolves a key hash to its record. Implemented by internal/store.
 type Store interface {
 	TenantIDByKeyHash(ctx context.Context, hashHex string) (int64, error)
 }
 
+// PlanStore is the richer lookup (identity + quota). Optional: a Store
+// that does not implement it still authenticates, with default quota.
+type PlanStore interface {
+	LookupKeyForAuth(ctx context.Context, hashHex string) (KeyRecord, error)
+}
+
+// KeyRecord mirrors store.KeyRecord without importing it (the dependency
+// runs the other way: store imports auth for ErrUnknownKey).
+type KeyRecord struct {
+	TenantID     int64
+	Burst        int
+	RefillPerSec float64
+}
+
 type cacheEntry struct {
-	tenantID int64
-	expires  time.Time
+	id      Identity
+	expires time.Time
 }
 
 type Authenticator struct {
@@ -52,11 +85,11 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		e, hit := a.cache[hash]
 		a.mu.Unlock()
 		if hit && time.Now().Before(e.expires) {
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, e.id)))
 			return
 		}
 
-		tenantID, err := a.store.TenantIDByKeyHash(r.Context(), hash)
+		id, err := a.lookup(r.Context(), hash)
 		switch {
 		case errors.Is(err, ErrUnknownKey):
 			http.Error(w, `{"error":{"message":"invalid api key"}}`, http.StatusUnauthorized)
@@ -67,10 +100,27 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		}
 
 		a.mu.Lock()
-		a.cache[hash] = cacheEntry{tenantID: tenantID, expires: time.Now().Add(a.ttl)}
+		a.cache[hash] = cacheEntry{id: id, expires: time.Now().Add(a.ttl)}
 		a.mu.Unlock()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, id)))
 	})
+}
+
+func (a *Authenticator) lookup(ctx context.Context, hash string) (Identity, error) {
+	if ps, ok := a.store.(PlanStore); ok {
+		rec, err := ps.LookupKeyForAuth(ctx, hash)
+		if err != nil {
+			return Identity{}, err
+		}
+		return Identity{TenantID: rec.TenantID, KeyHash: hash,
+			Burst: rec.Burst, RefillPerSec: rec.RefillPerSec}, nil
+	}
+	tid, err := a.store.TenantIDByKeyHash(ctx, hash)
+	if err != nil {
+		return Identity{}, err
+	}
+	// Defaults for stores without plan support (tests, fakes).
+	return Identity{TenantID: tid, KeyHash: hash, Burst: 60, RefillPerSec: 10}, nil
 }
 
 func bearer(r *http.Request) (string, bool) {

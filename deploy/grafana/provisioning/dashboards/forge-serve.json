@@ -1,0 +1,125 @@
+{
+  "uid": "forge-serve",
+  "title": "Forge-Serve",
+  "tags": ["forge-serve"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "TTFT percentiles (s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(forge_ttft_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(forge_ttft_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(forge_ttft_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Throughput (tokens/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "forge_tokens_per_second", "legendFormat": "tok/s", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Batch occupancy and queue depth",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "forge_batch_occupancy", "legendFormat": "active sequences", "refId": "A" },
+        { "expr": "forge_worker_queue_depth", "legendFormat": "queued", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request rate by status",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (code) (rate(forge_requests_total[1m]))",
+          "legendFormat": "{{code}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Healthy workers",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 16 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "expr": "forge_healthy_workers", "legendFormat": "healthy", "refId": "A" },
+        { "expr": "forge_workers_total", "legendFormat": "total", "refId": "B" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Failovers (5m)",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 16 },
+      "targets": [
+        { "expr": "increase(forge_failovers_total[5m])", "legendFormat": "failovers", "refId": "A" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Rate limited (5m)",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "increase(forge_rate_limited_total[5m])", "legendFormat": "429s", "refId": "A" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Limiter local fallback (5m)",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 16 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "increase(forge_limiter_local_fallback_total[5m])",
+          "legendFormat": "degraded decisions",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

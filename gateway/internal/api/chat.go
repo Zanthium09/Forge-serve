@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Zanthium09/forge-serve/gateway/internal/auth"
 	"github.com/Zanthium09/forge-serve/gateway/internal/metrics"
 	"github.com/Zanthium09/forge-serve/gateway/internal/pool"
 	"github.com/Zanthium09/forge-serve/gateway/internal/worker"
@@ -39,7 +40,24 @@ const (
 )
 
 type chatHandler struct {
-	pool *pool.Pool
+	pool   *pool.Pool
+	record UsageRecorder
+}
+
+// reportUsage queues token accounting for the authenticated caller. Fire
+// and forget: billing data must never delay a response.
+func (h *chatHandler) reportUsage(r *http.Request, model string, prompt, completion int) {
+	if h.record == nil || completion == 0 {
+		return
+	}
+	id, ok := auth.FromContext(r.Context())
+	if !ok {
+		return
+	}
+	h.record.RecordUsage(UsageEvent{
+		TenantID: id.TenantID, KeyHash: id.KeyHash, Model: model,
+		PromptTokens: prompt, CompletionTokens: completion,
+	})
 }
 
 // writeOverloaded answers a rejected-at-admission request. Retry-After
@@ -129,7 +147,11 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 	}
 
 	total := 0
+	var usage worker.Event
 	emit := func(ev worker.Event) bool {
+		if ev.Done {
+			usage = ev
+		}
 		if total == 0 && !ev.Done {
 			// Headers are deferred until the first real event: an admission
 			// rejection or a failover must still be able to set a status
@@ -204,6 +226,7 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 		metrics.SetTokensPerSecond(float64(total) / el)
 	}
 	metrics.IncRequest(http.StatusOK)
+	h.reportUsage(r, model, usage.PromptTokens, usage.CompletionTokens)
 	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
@@ -259,6 +282,7 @@ func (h *chatHandler) aggregate(w http.ResponseWriter, r *http.Request, id, mode
 		metrics.SetTokensPerSecond(float64(final.CompletionTokens) / el)
 	}
 	metrics.IncRequest(http.StatusOK)
+	h.reportUsage(r, model, final.PromptTokens, final.CompletionTokens)
 	resp := ChatResponse{
 		ID: id, Object: "chat.completion", Created: time.Now().Unix(), Model: model,
 		Choices: []RespChoice{{
