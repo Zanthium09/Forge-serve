@@ -2,7 +2,7 @@
 MODEL_URL  = https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
 MODEL_FILE = models/qwen2.5-1.5b-instruct-q4_k_m.gguf
 
-.PHONY: run test lint model up bench plots
+.PHONY: run test lint model up bench plots chaos ratelimit-test
 
 run:            ## run gateway locally
 	cd gateway && go run ./cmd/gateway
@@ -28,3 +28,9 @@ bench:          ## sequential vs batched matrix (~15 min, local hardware only)
 
 plots:          ## turn benchmarks/raw/*.csv into tables and plots
 	python benchmarks/plot.py
+
+chaos:          ## kill a worker under load; assert zero loss, <5s recovery
+	bash benchmarks/chaos_test.sh
+
+ratelimit-test: ## 10x burst against the demo key; assert >99% accuracy
+	bash benchmarks/ratelimit_test.sh

@@ -185,18 +185,20 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 		writeNoCapacity(w)
 		return
 	}
-	sent, err := dispatch(r, wk, wreq, emit)
+	// total is the single source of truth for "bytes the client has seen";
+	// it persists across attempts, which is exactly what the retry
+	// decision and the header-deferral both depend on.
+	_, err = dispatch(r, wk, wreq, emit)
 
 	// Retry once on another worker, but only if nothing reached the client
 	// yet. Restarting a half-streamed response would duplicate text.
-	if err != nil && sent == 0 && r.Context().Err() == nil &&
+	if err != nil && total == 0 && r.Context().Err() == nil &&
 		!errors.Is(err, worker.ErrOverloaded) {
 		slog.Warn("worker failed before first token, retrying elsewhere",
 			"worker", wk.URL, "err", err)
 		metrics.IncFailover()
 		if alt, perr := h.pool.Pick(wk); perr == nil {
-			wk = alt
-			sent, err = dispatch(r, wk, wreq, emit)
+			_, err = dispatch(r, alt, wreq, emit)
 		}
 	}
 
