@@ -17,9 +17,8 @@ from __future__ import annotations
 
 import ctypes
 
-import numpy as np
-
 import llama_cpp
+import numpy as np
 from kvcache import SlotPositions
 
 
