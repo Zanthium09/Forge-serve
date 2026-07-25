@@ -1,3 +1,5 @@
 models/
 bin/
 *.exe
+__pycache__/
+*.pyc
