@@ -1,0 +1,29 @@
+services:
+  gateway:
+    build: ./gateway
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+      - postgres
+
+  # Unused until Phase 1 (auth) / Phase 4 (rate limiting) — present now so
+  # the one-command quickstart shape is fixed from day one.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: forge
+      POSTGRES_DB: forge
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

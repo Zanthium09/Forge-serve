@@ -1,3 +1,3 @@
 module github.com/Zanthium09/forge-serve/gateway
 
-go 1.26.5
+go 1.22
