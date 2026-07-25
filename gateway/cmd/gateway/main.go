@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/Zanthium09/forge-serve/gateway/internal/api"
+	"github.com/Zanthium09/forge-serve/gateway/internal/auth"
+	"github.com/Zanthium09/forge-serve/gateway/internal/store"
 	"github.com/Zanthium09/forge-serve/gateway/internal/worker"
 )
 
@@ -23,7 +25,18 @@ func main() {
 	if workerURL == "" {
 		workerURL = "http://localhost:9000"
 	}
-	srv := &http.Server{Addr: addr, Handler: api.NewMux(worker.New(workerURL))}
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		slog.Error("DATABASE_URL is required")
+		os.Exit(1)
+	}
+	st, err := store.New(dsn)
+	if err != nil {
+		slog.Error("postgres unavailable", "err", err)
+		os.Exit(1)
+	}
+	authn := auth.New(st, 5*time.Minute)
+	srv := &http.Server{Addr: addr, Handler: api.NewMux(worker.New(workerURL), authn)}
 
 	// Graceful shutdown: SIGTERM/interrupt lets in-flight streams drain
 	// instead of cutting client connections mid-token.
