@@ -47,10 +47,19 @@ boundary and its slot freed. Wasted work is bounded by one decode step.
 - A long request can hold a slot for a long time; short requests behind it
   wait. Acceptable at Phase 2 scale; Phase 6's priority classes and
   optional preemption address it if benchmarks show it hurts p99.
-- `MAX_QUEUE` becomes a tuning knob: too small rejects burstable traffic,
-  too large reintroduces latency-under-overload. Default 32 is 4× the
-  default batch size, chosen so a short burst absorbs but a sustained
-  overload sheds.
+- `MAX_QUEUE` is a **latency budget, not a buffer size**. A slot frees
+  roughly every (service time / `MAX_BATCH`), so the last waiter in a queue
+  of N pays about N times that interval before its first token. Size the
+  queue to what can be drained inside the TTFT SLO; anything deeper is a
+  promise the server cannot keep and is rejected at admission instead.
+  Defaults are `MAX_BATCH=16` (chosen from measured decode scaling) and
+  `MAX_QUEUE=8`.
+- Queue depth cannot rescue an over-capacity system. Measured at
+  concurrency 50 (`benchmarks/report.md`): shrinking `MAX_QUEUE` from 8 to
+  2 moved p99 TTFT only 27.5 s -> 17.3 s, because p99 is bounded by service
+  time — an arrival waits up to one full request duration for a slot no
+  matter how short the line. Capacity beyond that comes from more workers
+  (Phase 3) or preemption (Phase 6), not from tuning.
 
 ## Related simplifications (recorded here so they are not silently lost)
 

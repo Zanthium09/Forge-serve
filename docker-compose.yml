@@ -24,6 +24,8 @@ services:
       MODEL_PATH: /models/qwen2.5-1.5b-instruct-q4_k_m.gguf
       # ENGINE=sequential docker compose up -d worker -> Phase 1 baseline
       ENGINE: ${ENGINE:-batched}
+      MAX_BATCH: ${MAX_BATCH:-16}
+      MAX_QUEUE: ${MAX_QUEUE:-8}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/healthz')"]
       interval: 10s
