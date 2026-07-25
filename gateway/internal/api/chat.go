@@ -122,7 +122,8 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 		// The 502 label records the outcome even though the wire said 200.
 		metrics.IncRequest(http.StatusBadGateway)
 		slog.Error("worker stream failed", "err", err, "tokens_sent", sent)
-		fmt.Fprintf(w, "data: {\"error\": {\"message\": \"upstream failure\"}}\n\n")
+		// Best-effort: the client may already be gone.
+		_, _ = fmt.Fprintf(w, "data: {\"error\": {\"message\": \"upstream failure\"}}\n\n")
 		flusher.Flush()
 		return
 	}
@@ -130,7 +131,7 @@ func (h *chatHandler) stream(w http.ResponseWriter, r *http.Request, id, model s
 		metrics.SetTokensPerSecond(float64(sent) / el)
 	}
 	metrics.IncRequest(http.StatusOK)
-	fmt.Fprint(w, "data: [DONE]\n\n")
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
 

@@ -62,7 +62,7 @@ func (c *Client) Generate(ctx context.Context, req Request, fn func(Event) bool)
 	if err != nil {
 		return fmt.Errorf("worker request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("worker returned %d", resp.StatusCode)
 	}

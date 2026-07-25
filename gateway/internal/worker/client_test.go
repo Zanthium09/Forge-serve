@@ -17,7 +17,7 @@ func fakeWorker(t *testing.T, lines []string) *httptest.Server {
 		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		for _, l := range lines {
-			fmt.Fprintln(w, l)
+			_, _ = fmt.Fprintln(w, l)
 		}
 	}))
 }

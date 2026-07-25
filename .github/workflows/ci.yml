@@ -13,7 +13,7 @@ jobs:
         with:
           go-version: "1.26"
           cache-dependency-path: gateway/go.sum
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v8
         with:
           working-directory: gateway
       - name: Unit tests

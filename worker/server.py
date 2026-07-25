@@ -8,12 +8,11 @@ engine is benchmarked against.
 import json
 import threading
 
+import config
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from llama_cpp import Llama
 from pydantic import BaseModel
-
-import config
 
 app = FastAPI()
 llm = Llama(

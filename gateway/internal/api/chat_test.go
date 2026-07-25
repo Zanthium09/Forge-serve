@@ -51,7 +51,7 @@ func fakeWorker(t *testing.T, delay time.Duration, lines []string) *httptest.Ser
 				return
 			case <-time.After(delay):
 			}
-			fmt.Fprintln(w, l)
+			_, _ = fmt.Fprintln(w, l)
 			f.Flush()
 		}
 	}))
@@ -76,7 +76,7 @@ func TestChatStreamRelaysSSE(t *testing.T) {
 
 	resp := postJSON(t, srv.URL+"/v1/chat/completions",
 		`{"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Fatalf("Content-Type = %q", ct)
 	}
@@ -116,7 +116,7 @@ func TestChatNonStreamAggregates(t *testing.T) {
 
 	resp := postJSON(t, srv.URL+"/v1/chat/completions",
 		`{"messages":[{"role":"user","content":"hi"}]}`)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var cr ChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
@@ -138,7 +138,7 @@ func TestChatRejectsInvalidRequest(t *testing.T) {
 	defer srv.Close()
 
 	resp := postJSON(t, srv.URL+"/v1/chat/completions", `{"messages":[]}`)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
@@ -166,7 +166,7 @@ func TestChatClientDisconnectCancelsHandlerAndWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if _, err := resp.Body.Read(make([]byte, 1)); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestHealthzStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
