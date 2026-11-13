@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Zanthium09/forge-serve/gateway/internal/auth"
+	"github.com/Zanthium09/forge-serve/gateway/internal/config"
 	"github.com/Zanthium09/forge-serve/gateway/internal/pool"
 )
 
@@ -19,8 +20,9 @@ import (
 // package auth; these tests focus on the chat handler.
 type allowAllStore struct{}
 
-func (allowAllStore) TenantIDByKeyHash(_ context.Context, _ string) (int64, error) {
-	return 1, nil
+func (allowAllStore) LookupKeyForAuth(_ context.Context, _ string) (auth.KeyRecord, error) {
+	return auth.KeyRecord{KeyID: 1, UserID: 1, Role: "member", Active: true,
+		RPMBurst: 1000, RPMRefillPerSec: 1000}, nil
 }
 
 // postJSON sends an authed POST and returns the response.
@@ -65,9 +67,33 @@ var happyLines = []string{
 
 func newTestMux(t *testing.T, workerURLs ...string) http.Handler {
 	t.Helper()
-	p := pool.New(workerURLs)
-	p.MarkHealthyForTest()
-	return NewMux(Deps{Pool: p, Auth: auth.New(allowAllStore{}, time.Minute)})
+	f, err := pool.NewFleet(config.FromWorkerURLs(workerURLs, "qwen2.5-1.5b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.MarkHealthyForTest()
+	return NewMux(Deps{Fleet: f, Auth: auth.New(allowAllStore{}, time.Minute, 0, nil), MaxBodyBytes: 1 << 20})
+}
+
+// Wire shapes the tests decode (OpenAI chat.completion[.chunk]).
+type chunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+}
+
+type ChatResponse struct {
+	Object  string `json:"object"`
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Usage struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 func TestChatStreamRelaysSSE(t *testing.T) {
@@ -139,7 +165,9 @@ func TestChatRejectsInvalidRequest(t *testing.T) {
 	srv := httptest.NewServer(newTestMux(t, "http://unused.invalid"))
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL+"/v1/chat/completions", `{"messages":[]}`)
+	// Field semantics belong to the engine now (ADR-007); the gateway
+	// rejects only what it must read: here, the missing messages field.
+	resp := postJSON(t, srv.URL+"/v1/chat/completions", `{"model":"qwen2.5-1.5b"}`)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)

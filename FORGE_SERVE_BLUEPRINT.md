@@ -284,3 +284,12 @@ Changes from the original draft, agreed with the owner before any code was writt
 7. **Phase 2 risk named**: continuous batching requires llama-cpp-python's low-level API; the high-level API cannot interleave sequences.
 8. **Pacing rule** (§8): owner's time is unpredictable; every phase exit is a resume-usable checkpoint.
 9. **Conc-200 benchmark honesty** (§9): admission control 429s most requests by design; report accepted-request percentiles plus rejection rate.
+
+## 14. Amendment log — 2026-11-12 (production gateway)
+
+After the MVP, the direction changes from portfolio to real infrastructure:
+a gateway in front of an organization's vLLM servers, later
+open-sourced. The binding design is
+`docs/superpowers/specs/2026-11-10-production-gateway-design.md`; decisions
+are recorded in ADR-007 to ADR-015. The MVP engine (`worker/`) stays as a
+supported backend and as the benchmark baseline.

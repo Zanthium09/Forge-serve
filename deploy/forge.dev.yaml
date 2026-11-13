@@ -1,0 +1,7 @@
+# Local development: the gateway in front of our own continuous-batching
+# workers (docker-compose.yml). Production configs list vLLM backends.
+models:
+  - name: qwen2.5-1.5b
+    backends:
+      - { url: "http://worker1:9000", kind: forge }
+      - { url: "http://worker2:9000", kind: forge }

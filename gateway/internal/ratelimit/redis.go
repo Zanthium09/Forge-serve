@@ -79,3 +79,62 @@ func (b *RedisBackend) Allow(ctx context.Context, key string, p Plan, now time.T
 }
 
 func (b *RedisBackend) Close() error { return b.rdb.Close() }
+
+// Client shares the connection pool with other Redis users (budgets).
+func (b *RedisBackend) Client() *redis.Client { return b.rdb }
+
+// tpmCheckScript / tpmDebitScript are the tokens-per-minute bucket
+// (ADR-012) with the same atomicity argument as bucketScript. Unlike the
+// request bucket, tokens may go negative: the debit happens after the
+// request, when its real size is known.
+const tpmRefill = `
+local key    = KEYS[1]
+local cap    = tonumber(ARGV[1])
+local now_ms = tonumber(ARGV[2])
+local rate   = cap / 60.0
+local data   = redis.call('HMGET', key, 'tokens', 'ts')
+local tokens = tonumber(data[1])
+local ts     = tonumber(data[2])
+if tokens == nil then
+  tokens = cap
+  ts = now_ms
+end
+tokens = math.min(cap, tokens + math.max(0, now_ms - ts) / 1000.0 * rate)
+`
+
+const tpmCheckScript = tpmRefill + `
+redis.call('HMSET', key, 'tokens', tokens, 'ts', now_ms)
+redis.call('EXPIRE', key, math.ceil((cap - tokens) / rate) + 60)
+if tokens > 0 then
+  return {1, 0}
+end
+return {0, math.floor(-tokens / rate) + 1}
+`
+
+const tpmDebitScript = tpmRefill + `
+tokens = tokens - tonumber(ARGV[3])
+redis.call('HMSET', key, 'tokens', tokens, 'ts', now_ms)
+redis.call('EXPIRE', key, math.ceil((cap - tokens) / rate) + 60)
+return 1
+`
+
+var (
+	tpmCheck = redis.NewScript(tpmCheckScript)
+	tpmDebit = redis.NewScript(tpmDebitScript)
+)
+
+func (b *RedisBackend) TPMCheck(ctx context.Context, key string, perMinute int, now time.Time) (bool, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	res, err := tpmCheck.Run(ctx, b.rdb, []string{"forge:tpm:" + key}, perMinute, now.UnixMilli()).Int64Slice()
+	if err != nil {
+		return false, 0, err
+	}
+	return res[0] == 1, int(res[1]), nil
+}
+
+func (b *RedisBackend) TPMDebit(ctx context.Context, key string, tokens, perMinute int, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	return tpmDebit.Run(ctx, b.rdb, []string{"forge:tpm:" + key}, perMinute, now.UnixMilli(), tokens).Err()
+}

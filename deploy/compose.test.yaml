@@ -1,0 +1,68 @@
+# Layer-2 test stack (spec §10.1): the gateway in front of two Ollama
+# containers standing in for two GPU servers, so routing,
+# failover and fallback can be verified on a laptop without GPUs.
+#
+#   docker compose -f deploy/compose.test.yaml up -d --build
+#   docker compose -f deploy/compose.test.yaml exec ollama1 ollama pull qwen2.5:0.5b
+#   docker compose -f deploy/compose.test.yaml exec ollama2 ollama pull qwen2.5:0.5b
+services:
+  gateway:
+    build: ../gateway
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./forge.test.yaml:/etc/forge/forge.yaml:ro
+    environment:
+      FORGE_CONFIG: /etc/forge/forge.yaml
+      # Development only: creates sk-forge-dev-key and sk-forge-demo-key.
+      FORGE_DEV_SEED: "1"
+      DATABASE_URL: postgres://forge:forge@postgres:5432/forge
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      # The gateway exits if Postgres refuses its first ping.
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+      ollama1: { condition: service_started }
+      ollama2: { condition: service_started }
+
+  ollama1:
+    image: ollama/ollama
+    volumes: [ollama1:/root/.ollama]
+
+  ollama2:
+    image: ollama/ollama
+    volumes: [ollama2:/root/.ollama]
+
+  redis:
+    image: redis:7-alpine
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: forge
+      POSTGRES_DB: forge
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "forge"]
+      interval: 2s
+      retries: 30
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports: ["3000:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on: [prometheus]
+
+volumes:
+  ollama1:
+  ollama2:

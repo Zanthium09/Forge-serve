@@ -63,6 +63,11 @@ var (
 		Name: "forge_limiter_local_fallback_total",
 		Help: "Rate-limit decisions served by the local fallback (Redis down).",
 	})
+
+	budgetSkippedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "forge_budget_check_skipped_total",
+		Help: "Token-budget checks skipped because Redis was unavailable (ADR-009).",
+	})
 )
 
 func IncRequest(code int)          { requestsTotal.WithLabelValues(strconv.Itoa(code)).Inc() }
@@ -81,3 +86,4 @@ func SetFleet(queue, active, healthy, total int) {
 func IncFailover()        { failoversTotal.Inc() }
 func IncRateLimited()     { rateLimitedTotal.Inc() }
 func IncLimiterFallback() { limiterFallbackTotal.Inc() }
+func IncBudgetSkipped()   { budgetSkippedTotal.Inc() }

@@ -1,6 +1,6 @@
 // Package pool tracks the worker fleet: liveness and routing.
 //
-// Health is PULLED (the gateway polls each worker's /stats every 2s)
+// Health is PULLED (the gateway polls each backend's load every 2s)
 // rather than pushed by worker heartbeats - see ADR-004. The same poll
 // feeds both the health decision and the capacity gauges, so there is one
 // signal path instead of two.
@@ -20,7 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Zanthium09/forge-serve/gateway/internal/worker"
+	"github.com/Zanthium09/forge-serve/gateway/internal/backend"
 )
 
 // unhealthyAfter is the consecutive-miss threshold. Three misses at a 2s
@@ -30,20 +30,55 @@ const unhealthyAfter = 3
 
 var ErrNoHealthyWorker = errors.New("no healthy worker available")
 
-// Worker is one inference worker plus the gateway's view of it.
+// ErrPoolFull: healthy backends exist but all are at an admission limit
+// (ADR-010). Distinct from ErrNoHealthyWorker: 429, not 503.
+var ErrPoolFull = errors.New("all backends at capacity")
+
+// Worker is one backend plus the gateway's view of it.
 type Worker struct {
-	URL    string
-	Client *worker.Client
+	URL     string
+	Backend backend.Backend
+
+	maxWaiting       int // engine queue limit; 0 = not used
+	maxInflight      int // gateway-side limit per backend
+	supportsPriority bool
 
 	// outstanding is the estimated number of tokens this worker still owes
 	// to in-flight clients. Atomic: read by every routing decision.
 	outstanding atomic.Int64
+	// inflight counts requests this gateway has open to the backend. Unlike
+	// the 2s poll it is never stale, and it works for every engine.
+	inflight atomic.Int64
 
-	mu         sync.Mutex
-	healthy    bool
-	misses     int
-	queueDepth int
-	activeSeqs int
+	mu      sync.Mutex
+	healthy bool
+	misses  int
+	load    backend.Load
+}
+
+func NewWorker(url string, b backend.Backend, maxWaiting, maxInflight int, supportsPriority bool) *Worker {
+	return &Worker{URL: url, Backend: b, maxWaiting: maxWaiting,
+		maxInflight: maxInflight, supportsPriority: supportsPriority}
+}
+
+func (w *Worker) SupportsPriority() bool { return w.supportsPriority }
+
+func (w *Worker) Acquire() { w.inflight.Add(1) }
+func (w *Worker) Release() { w.inflight.Add(-1) }
+
+// Inflight is exported for tests in other packages.
+func (w *Worker) Inflight() int64 { return w.inflight.Load() }
+
+// Admissible: healthy and under both admission limits.
+func (w *Worker) Admissible() bool {
+	w.mu.Lock()
+	healthy, load := w.healthy, w.load
+	w.mu.Unlock()
+	if !healthy || w.inflight.Load() >= int64(w.maxInflight) {
+		return false
+	}
+	queueFull := load.Known && w.maxWaiting > 0 && load.Waiting >= w.maxWaiting
+	return !queueFull
 }
 
 func (w *Worker) Healthy() bool {
@@ -75,15 +110,12 @@ type Pool struct {
 	workers []*Worker
 }
 
-func New(urls []string) *Pool {
-	p := &Pool{}
-	for _, u := range urls {
-		p.workers = append(p.workers, &Worker{URL: u, Client: worker.New(u)})
-	}
-	return p
-}
+func New(ws []*Worker) *Pool { return &Pool{workers: ws} }
 
 func (p *Pool) Size() int { return len(p.workers) }
+
+// Workers is a read-only view for metrics and tests.
+func (p *Pool) Workers() []*Worker { return p.workers }
 
 // MarkHealthyForTest seeds health without waiting for a poll cycle.
 // Exported for tests in other packages that need a usable pool.
@@ -95,23 +127,32 @@ func (p *Pool) MarkHealthyForTest() {
 	}
 }
 
-// Pick returns the healthy worker with the fewest outstanding tokens,
+// Pick returns the admissible worker with the fewest outstanding tokens,
 // skipping `exclude` (used by failover to avoid retrying on the worker
 // that just failed).
 func (p *Pool) Pick(exclude *Worker) (*Worker, error) {
 	var best *Worker
+	sawHealthy := false
 	for _, w := range p.workers {
 		if w == exclude || !w.Healthy() {
+			continue
+		}
+		sawHealthy = true
+		if !w.Admissible() {
 			continue
 		}
 		if best == nil || w.Outstanding() < best.Outstanding() {
 			best = w
 		}
 	}
-	if best == nil {
+	switch {
+	case best != nil:
+		return best, nil
+	case sawHealthy:
+		return nil, ErrPoolFull
+	default:
 		return nil, ErrNoHealthyWorker
 	}
-	return best, nil
 }
 
 // Snapshot aggregates fleet state for metrics. Unhealthy workers are
@@ -129,8 +170,8 @@ func (p *Pool) Snapshot() Snapshot {
 		w.mu.Lock()
 		if w.healthy {
 			s.HealthyWorkers++
-			s.QueueDepth += w.queueDepth
-			s.ActiveSeqs += w.activeSeqs
+			s.QueueDepth += w.load.Waiting
+			s.ActiveSeqs += w.load.Running
 		}
 		w.mu.Unlock()
 	}
@@ -164,14 +205,14 @@ func (p *Pool) pollOnce(ctx context.Context) {
 			// stall the next round of health checks.
 			cctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 			defer cancel()
-			st, err := w.Client.Stats(cctx)
-			w.observe(st, err)
+			l, err := w.Backend.Load(cctx)
+			w.observe(l, err)
 		}(w)
 	}
 	wg.Wait()
 }
 
-func (w *Worker) observe(st worker.StatsResponse, err error) {
+func (w *Worker) observe(l backend.Load, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err != nil {
@@ -187,6 +228,5 @@ func (w *Worker) observe(st worker.StatsResponse, err error) {
 	}
 	w.healthy = true
 	w.misses = 0
-	w.queueDepth = st.QueueDepth
-	w.activeSeqs = st.ActiveSeqs
+	w.load = l
 }

@@ -1,0 +1,13 @@
+# Layer-2 test config: "small" runs on both Ollamas (failover works),
+# "solo" only on ollama1 and falls back to "small" when ollama1 is down.
+models:
+  - name: small
+    upstream_model: qwen2.5:0.5b
+    backends:
+      - { url: "http://ollama1:11434", kind: ollama }
+      - { url: "http://ollama2:11434", kind: ollama }
+  - name: solo
+    upstream_model: qwen2.5:0.5b
+    fallback: small
+    backends:
+      - { url: "http://ollama1:11434", kind: ollama }

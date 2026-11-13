@@ -3,8 +3,12 @@ services:
     build: ./gateway
     ports:
       - "8080:8080"
+    volumes:
+      - ./deploy/forge.dev.yaml:/etc/forge/forge.yaml:ro
     environment:
-      WORKER_URLS: http://worker1:9000,http://worker2:9000
+      FORGE_CONFIG: /etc/forge/forge.yaml
+      # Development only: creates sk-forge-dev-key and sk-forge-demo-key.
+      FORGE_DEV_SEED: "1"
       DATABASE_URL: postgres://forge:forge@postgres:5432/forge
       REDIS_URL: redis://redis:6379
     depends_on:
@@ -13,7 +17,8 @@ services:
       worker2:
         condition: service_healthy
       postgres:
-        condition: service_started
+        # The gateway exits if Postgres refuses its first ping.
+        condition: service_healthy
       redis:
         condition: service_started
 
@@ -49,11 +54,14 @@ services:
       POSTGRES_USER: forge
       POSTGRES_PASSWORD: forge
       POSTGRES_DB: forge
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "forge"]
+      interval: 2s
+      retries: 30
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./deploy/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
   prometheus:
     image: prom/prometheus:v2.54.1

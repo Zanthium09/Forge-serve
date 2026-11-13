@@ -42,8 +42,18 @@ for chunk in s:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
 
-Seeded keys: `sk-forge-dev-key` (60 burst, 10/s) and `sk-forge-demo-key`
-(5 burst, 1/s — small on purpose, so rate limiting is easy to demonstrate).
+Development keys: `sk-forge-dev-key` (60 burst, 10/s) and
+`sk-forge-demo-key` (5 burst, 1/s — small on purpose, so rate limiting is
+easy to demonstrate). They exist only because the dev compose file sets
+`FORGE_DEV_SEED=1`.
+
+For a real install, leave `FORGE_DEV_SEED` unset, create the first admin
+once, then manage people and keys through the admin API (`/admin/v1/...`):
+
+```bash
+docker compose exec gateway /gateway admin bootstrap --email you@company.com
+docker compose exec gateway /gateway users import /path/to/people.csv   # email,display_name,team
+```
 
 ## Architecture
 

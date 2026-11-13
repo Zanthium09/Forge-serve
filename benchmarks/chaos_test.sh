@@ -14,6 +14,13 @@ DURATION="${DURATION:-60}"
 VICTIM="${VICTIM:-forge-serve-worker2-1}"
 KEY="${KEY:-sk-forge-dev-key}"
 URL="${URL:-http://localhost:8080}"
+# MODEL is optional: with several models configured the gateway needs one.
+MODEL="${MODEL:-}"
+if [ -n "$MODEL" ]; then
+  BODY='{"model":"'"$MODEL"'","max_tokens":24,"messages":[{"role":"user","content":"hi"}]}'
+else
+  BODY='{"max_tokens":24,"messages":[{"role":"user","content":"hi"}]}'
+fi
 OUT="benchmarks/raw/chaos.csv"
 mkdir -p benchmarks/raw
 echo "unix_ms,status,ok" > "$OUT"
@@ -29,7 +36,7 @@ for i in $(seq 1 6); do
         -X POST "$URL/v1/chat/completions" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $KEY" \
-        -d '{"max_tokens":24,"messages":[{"role":"user","content":"hi"}]}' 2>/dev/null)
+        -d "$BODY" 2>/dev/null)
       # An empty code means the connection itself failed: that is request
       # loss, which is exactly what this test looks for.
       [ -z "$code" ] && code="000"
