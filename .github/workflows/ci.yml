@@ -48,7 +48,7 @@ jobs:
           python-version: "3.11"
       - name: Lint (ruff)
         run: |
-          pip install ruff
+          pip install ruff==0.17.5  # pinned: new releases add rules and break CI on unchanged code
           ruff check worker/
 
   worker-tests:

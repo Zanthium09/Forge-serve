@@ -78,7 +78,7 @@ if config.ENGINE == "batched":
                             # covers a notify landing between the failed
                             # get_nowait above and this clear().
                             await asyncio.wait_for(ready.wait(), timeout=0.25)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             pass
                         continue
                     if piece is None:
